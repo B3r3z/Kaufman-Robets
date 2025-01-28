@@ -1,91 +1,154 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import sys
-
-def kaufmana(a_vals, C, m, t_list, output_filename="wyniki.txt"):
+def stationary_distribution(a_i_list, t_list, C):
     """
-    Oblicza i zapisuje do pliku prawdopodobieństwa blokady.
+    Metoda Kaufmana-Robertsa (jednowymiarowa):
+    Zwraca listę p[0..C], gdzie p[n] to stacjonarne prawdopodobieństwo
+    bycia w stanie n zajętych zasobów (po normalizacji).
+    """
+    p_unnorm = [0.0]*(C+1)
+    p_unnorm[0] = 1.0
+    m = len(a_i_list)
+    for n in range(1, C+1):
+        s = 0.0
+        for i in range(m):
+            if n >= t_list[i]:
+                s += a_i_list[i] * t_list[i] * p_unnorm[n - t_list[i]]
+        p_unnorm[n] = s / n if n > 0 else 0
     
-    Parametry:
-    -----------
-    a_vals : list of float
-        Lista wartości 'a' (ruch na 1 jednostkę pojemności),
-        np. [a_min, a_min + a_step, ..., a_max].
-    C : int
-        Pojemność systemu (maksymalna liczba jednostek, które mogą być zajęte).
-    m : int
-        Liczba klas ruchu.
-    t_list : list of int
-        Lista rozmiarów żądań (w jednostkach), t_i dla każdej klasy i=1..m.
-    output_filename : str
-        Nazwa pliku wyjściowego (domyślnie "wyniki.txt").
+    norm_factor = sum(p_unnorm)
+    if norm_factor > 0:
+        p = [val / norm_factor for val in p_unnorm]
+    else:
+        p = [0]*(C+1)
+        p[0] = 1.0
+    return p
+
+def blocking_probabilities(p, t_list, C):
     """
-    with open(output_filename, 'w') as f:
+    Wylicza prawdopodobieństwo blokady dla każdej klasy i:
+    P_blok(i) = sum_{n = C - t_i +1 to C} p[n].
+    """
+    m = len(t_list)
+    pb = []
+    for i in range(m):
+        start_idx = max(0, C - t_list[i] + 1)
+        pb_i = sum(p[start_idx : C+1])
+        pb.append(pb_i)
+    return pb
+
+def multi_service_erlang_extended(a_vals, C, t_list,
+                                  usage_filename="wyniki.txt",
+                                  blocking_filename="wynik_prawdop.txt"):
+    """
+    Dla każdej wartości a z listy a_vals:
+      1) oblicza odpowiadające jej a_i = (a*C)/(m*t_i),
+      2) wyznacza stacjonarny rozkład p(n) (n=0..C),
+      3) Zapisuje do:
+         - blocking_filename: wartość a + prawdopodobieństwa blokady,
+         - usage_filename:    tablicę (n, usage_k, ..., sum) oraz niewielki nagłówek.
+    """
+    m = len(t_list)                   # liczba klas
+    
+    # Otwieramy 2 pliki – jeden do PB, drugi do tabeli usage
+    with open(blocking_filename, "w", encoding="utf-8") as fb, \
+         open(usage_filename,    "w", encoding="utf-8") as fu:
         
-        # Nagłówek w pliku: podstawowe informacje
-        f.write("# Pojemność systemu (C) = {}\n".format(C))
-        f.write("# Liczba klas (m)      = {}\n".format(m))
+        # -- Nagłówki --
+        fb.write(f"# BLOKADY\n")
+        fb.write(f"# C = {C}\n")
         for i in range(m):
-            f.write("# t[{}] = {}\n".format(i+1, t_list[i]))
-        f.write("# Kolumny:\n")
-        f.write("#  1) a (ruch/jedn. pojemności)\n")
-        f.write("#  2..(m+1)) prawd.blokady poszczególnych klas\n")
-        f.write("\n")
-        header_cols = ["a"]
-        for i in range(m):
-            header_cols.append("Pb_class{}".format(i+1))
-        f.write(" ".join(header_cols) + "\n")
+            fb.write(f"# t[{i+1}] = {t_list[i]}\n")
+        fb.write("#\n")
+        fb.write("# Kolumny: a  Pb(klasa1)  Pb(klasa2)  ...\n\n")
         
-        # Przechodzimy po wartościach 'a'
+        fu.write(f"# UŻYCIE ZASOBÓW (przybliżone)\n")
+        fu.write(f"# C = {C}\n")
+        for i in range(m):
+            fu.write(f"# t[{i+1}] = {t_list[i]}\n")
+        fu.write("#\n")
+        fu.write("# Dla każdej wartości a – tabela ze stanem n i średnim użyciem zasobów\n\n")
+        
         for a in a_vals:
-            a_i = []
-            for t_i in t_list:
-                a_i.append( (a * C) / (m * t_i) )
-            p = [0.0] * (C + 1)
-            p[0] = 1.0  # p(0) = 1 (przed normalizacją)
-            for x in range(1, C + 1):
-                s = 0.0
-                # sumujemy po klasach i, które mogą "zmieścić się" w stanie x
-                for i in range(m):
-                    if x - t_list[i] >= 0:
-                        s += a_i[i] * t_list[i] * p[x - t_list[i]]
-                p[x] = s / x if x > 0 else 0
-            
-            # Normalizacja
-            norm_factor = sum(p)
-            if norm_factor > 0:
-                p = [px / norm_factor for px in p]
-            
-            # Prawdopodobieństwa blokady poszczególnych klas
-            pb = []
+            # 1) Obliczamy a_i
+            # wzór: a_i = (a*C)/(m*t_i)
+            a_i_list = []
             for i in range(m):
-                # Stan blokujący klasę i to każdy x > C - t_i (gdzie brak miejsca)
-                start_index = max(C - t_list[i] + 1, 0)
-                pb_i = sum(p[start_index : C+1])
-                pb.append(pb_i)
-            row_str = "{:.4f}".format(a)
+                a_i_list.append((a * C) / (m * t_list[i]))
+            
+            # 2) Rozkład p(n) (0..C)
+            p = stationary_distribution(a_i_list, t_list, C)
+            
+            # 3a) PB dla każdej klasy
+            pb = blocking_probabilities(p, t_list, C)
+            
+            # Zapis do pliku z blokadą
+            # Format:  a   pb1   pb2   ...
+            pb_line = f"{a:.4f}"
             for val in pb:
-                row_str += " {:.6f}".format(val)
-            f.write(row_str + "\n")
+                pb_line += f" {val:.6f}"
+            fb.write(pb_line + "\n")
+            
+            # Zapis do pliku z usage:
+            # Najpierw "nagłówek" sygnalizujący nową wartość a
+            fu.write(f"a = {a:.4f}\n")
+            
+            # Tabela: n, usage_1, usage_2, ..., sum
+            fu.write("n " + " ".join(f"t{i+1}" for i in range(m)) + " : sum\n")
+            
+            # Proporcjonalne przybliżenie udziału zasobów przez każdą klasę:
+            alpha_list = [a_i_list[i] * t_list[i] for i in range(m)]
+            alpha_sum = sum(alpha_list) if sum(alpha_list) > 1e-15 else 1.0
+            
+            for n in range(C+1):
+                # usage_in_state[i] = n * (alpha_i / alpha_sum)
+                if n == 0:
+                    usage_in_state = [0]*m
+                else:
+                    usage_in_state = [
+                        n*(alpha_list[i]/alpha_sum) for i in range(m)
+                    ]
+                usage_sum = sum(usage_in_state)
+                
+                row_str = f"{n:2d}"
+                for val in usage_in_state:
+                    row_str += f" {val:.4f}"
+                row_str += f" : {usage_sum:.4f}"
+                fu.write(row_str + "\n")
+            
+            fu.write("\n")  # odstęp między kolejnymi wartościami a
+
 
 def main():
-    #parametry wejściowe
-    a_min = 0.2  #minimalne a
-    a_max = 1.3 #maksymalne a
-    a_step = 0.1 # krok
-    C = 10        # pojemność systemu
-    m = 2         # liczba klas strumieni
-    t_list = [1, 2]  # żądania klasy i
-    a_vals = []
-    val = a_min
-    while val <= a_max:
-        a_vals.append(round(val, 4))
-        val += a_step
-    output_file = "wyniki.txt"
-    kaufmana(a_vals, C, m, t_list, output_file)
+    # Parametry
+    a_min = 0.2
+    a_max = 1.3
+    a_step = 0.1
     
-    print(f"Zakończono obliczenia. Wyniki zapisano w pliku: {output_file}")
+    C = 10           # całkowita liczba zasobów
+    t_list = [1, 2]  # zapotrzebowanie: klasa1 - 1 zasób, klasa2 - 2 zasoby
+    m = len(t_list)
+    
+    # Lista wartości a
+    a_vals = []
+    x = a_min
+    while x <= a_max + 1e-9:
+        a_vals.append(round(x, 4))
+        x += a_step
+    
+    # Nazwy dwóch plików wyjściowych
+    blocking_file = "wynik_prawdop.txt"
+    usage_file    = "wyniki.txt"
+    
+    # Uruchamiamy obliczenia
+    multi_service_erlang_extended(a_vals, C, t_list,
+                                  usage_filename=usage_file,
+                                  blocking_filename=blocking_file)
+    
+    print(f"Zakończono obliczenia.\n"
+          f" - Prawdopodobieństwa blokady w pliku: {blocking_file}\n"
+          f" - Szczegółowe informacje o zajętości w pliku: {usage_file}")
 
 if __name__ == "__main__":
     main()
